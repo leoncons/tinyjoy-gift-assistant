@@ -1,6 +1,6 @@
 # TinyJoy Gift Assistant
 
-A WordPress plugin that adds an AI-powered gift finder to [tinyjoygifts.com](https://tinyjoygifts.com). Customers answer 4 quick questions — recipient, occasion, vibe, and budget — and get personalized product recommendations with an optional AI-written message powered by Claude.
+A WordPress plugin that adds an AI-powered gift finder to [tinyjoygifts.com](https://tinyjoygifts.com). Customers answer 4 quick questions — recipient, occasion, vibe, and budget — and get personalized product recommendations with an AI-written message.
 
 ---
 
@@ -10,8 +10,8 @@ A WordPress plugin that adds an AI-powered gift finder to [tinyjoygifts.com](htt
 - **Floating widget** — persistent 🎁 button on every page, configurable label
 - **Shortcode** — embed the full finder on any page with `[tinyjoy_gift_finder]`
 - **Progressive matching** — if no exact match, relaxes filters automatically so customers always see results
-- **AI message** — Claude Haiku writes a 2-sentence personalized recommendation (optional, requires Anthropic API key)
-- **Admin settings** — API key, widget toggle, button label, max results
+- **AI message** — personalized 2-sentence recommendation powered by your choice of AI provider (see below)
+- **Admin settings** — AI tier/provider, API key, widget toggle, button label, max results
 
 ## Requirements
 
@@ -29,14 +29,36 @@ A WordPress plugin that adds an AI-powered gift finder to [tinyjoygifts.com](htt
 
 ## Configuration
 
-Go to **Settings → Gift Assistant**:
+Go to **Settings → Gift Assistant**.
+
+### AI Tier
+
+Choose **Free** or **Paid**:
+
+| Tier | Providers available |
+|---|---|
+| **Free** | Groq (Llama 3.1) |
+| **Paid** | Anthropic (Claude Haiku), Gemini (Flash), OpenAI (GPT-4o mini) |
+
+### Settings reference
 
 | Setting | Default | Description |
 |---|---|---|
-| Anthropic API Key | _(blank)_ | From [console.anthropic.com](https://console.anthropic.com) — enables AI gift messages |
+| AI Tier | Free | Free = Groq; Paid = Anthropic / Gemini / OpenAI |
+| AI Provider | Groq | The specific model provider to use |
+| API Key | _(blank)_ | Key for the selected provider (see instructions on the Settings page) |
 | Floating Widget | On | Toggle the 🎁 button sitewide |
 | Widget Button Label | `Find a Gift` | Text shown on the floating button |
 | Max Products Shown | `3` | Products returned per search (1–6) |
+
+### Getting API keys
+
+| Provider | Where to get your key |
+|---|---|
+| **Groq** (Free) | [console.groq.com](https://console.groq.com) → API Keys |
+| **Anthropic** | [console.anthropic.com](https://console.anthropic.com) |
+| **Gemini** | [aistudio.google.com](https://aistudio.google.com) → Get API key |
+| **OpenAI** | [platform.openai.com](https://platform.openai.com) → API keys |
 
 ## Shortcode
 
@@ -117,7 +139,7 @@ Edit each WooCommerce product and assign the appropriate slugs:
 1. Customer answers 4 questions in the wizard
 2. Plugin queries WooCommerce for products matching all selected tags + budget
 3. If no match, progressively relaxes: drops vibe → drops occasion → drops recipient → budget only
-4. Claude Haiku writes a 2-sentence personalized message (if API key is set)
+4. Selected AI provider writes a 2-sentence personalized message (if API key is set)
 5. Product cards shown with image, name, price, and link to the product page
 
 ## Releasing Updates
