@@ -37,94 +37,363 @@ function tga_register_settings(): void {
 	register_setting( 'tga_settings', 'tga_show_widget',       [ 'sanitize_callback' => 'absint', 'default' => 1 ] );
 	register_setting( 'tga_settings', 'tga_max_results',       [ 'sanitize_callback' => 'absint', 'default' => 3 ] );
 	register_setting( 'tga_settings', 'tga_widget_label',      [ 'sanitize_callback' => 'sanitize_text_field', 'default' => 'Find a Gift' ] );
+	register_setting( 'tga_settings', 'tga_ai_tier',           [ 'sanitize_callback' => 'sanitize_text_field', 'default' => 'free' ] );
+	register_setting( 'tga_settings', 'tga_ai_provider',       [ 'sanitize_callback' => 'sanitize_text_field', 'default' => 'groq' ] );
+	register_setting( 'tga_settings', 'tga_groq_api_key',      [ 'sanitize_callback' => 'sanitize_text_field' ] );
+	register_setting( 'tga_settings', 'tga_gemini_api_key',    [ 'sanitize_callback' => 'sanitize_text_field' ] );
+	register_setting( 'tga_settings', 'tga_openai_api_key',    [ 'sanitize_callback' => 'sanitize_text_field' ] );
 }
 
 function tga_settings_page(): void {
+	$tier     = get_option( 'tga_ai_tier', 'free' );
+	$provider = get_option( 'tga_ai_provider', 'groq' );
+
+	// Normalise: ensure provider is valid for the saved tier.
+	if ( $tier === 'free' && ! in_array( $provider, [ 'groq' ], true ) ) {
+		$provider = 'groq';
+	}
+	if ( $tier === 'paid' && ! in_array( $provider, [ 'anthropic', 'gemini', 'openai' ], true ) ) {
+		$provider = 'anthropic';
+	}
+
+	$ant_key  = get_option( 'tga_anthropic_api_key', '' );
+	$groq_key = get_option( 'tga_groq_api_key', '' );
+	$gem_key  = get_option( 'tga_gemini_api_key', '' );
+	$oai_key  = get_option( 'tga_openai_api_key', '' );
 	?>
 	<div class="wrap">
-		<h1>🎁 TinyJoy Gift Assistant</h1>
-		<form method="post" action="options.php">
-			<?php settings_fields( 'tga_settings' ); ?>
-			<table class="form-table">
-				<tr>
-					<th scope="row"><label for="tga_anthropic_api_key">Anthropic API Key</label></th>
-					<td>
-						<input type="password" id="tga_anthropic_api_key" name="tga_anthropic_api_key"
-							value="<?php echo esc_attr( get_option( 'tga_anthropic_api_key', '' ) ); ?>"
-							class="regular-text" autocomplete="new-password" />
-						<p class="description">Get your key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a>. Used to generate personalized gift messages. Leave blank to skip AI messages.</p>
-					</td>
-				</tr>
-				<tr>
-					<th scope="row"><label for="tga_show_widget">Floating Widget</label></th>
-					<td>
-						<label>
-							<input type="checkbox" id="tga_show_widget" name="tga_show_widget" value="1"
-								<?php checked( 1, get_option( 'tga_show_widget', 1 ) ); ?> />
-							Show the floating "Find a Gift" button on all pages
-						</label>
-					</td>
-				</tr>
-				<tr>
-					<th scope="row"><label for="tga_widget_label">Widget Button Label</label></th>
-					<td>
-						<input type="text" id="tga_widget_label" name="tga_widget_label"
-							value="<?php echo esc_attr( get_option( 'tga_widget_label', 'Find a Gift' ) ); ?>"
-							class="regular-text" />
-					</td>
-				</tr>
-				<tr>
-					<th scope="row"><label for="tga_max_results">Max Products Shown</label></th>
-					<td>
-						<input type="number" id="tga_max_results" name="tga_max_results" min="1" max="6"
-							value="<?php echo esc_attr( get_option( 'tga_max_results', 3 ) ); ?>"
-							class="small-text" />
-						<p class="description">How many matching products to show per search (1–6).</p>
-					</td>
-				</tr>
-			</table>
-			<?php submit_button(); ?>
-		</form>
+	<h1>🎁 TinyJoy Gift Assistant</h1>
 
-		<hr />
-		<h2>Shortcode</h2>
-		<p>Embed the full Gift Finder wizard on any page or post:</p>
-		<code>[tinyjoy_gift_finder]</code>
+	<style>
+	.tga-s { margin-top: 28px; }
+	.tga-s > h2 { font-size: 15px; font-weight: 600; border-bottom: 1px solid #dcdcde; padding-bottom: 10px; margin-bottom: 20px; }
+	/* Tier cards */
+	.tga-tier-row { display: flex; gap: 12px; margin-bottom: 24px; }
+	.tga-tier-lbl { flex: 1; max-width: 230px; display: flex; align-items: flex-start; gap: 12px; padding: 16px 18px; border: 2px solid #dcdcde; border-radius: 8px; cursor: pointer; transition: border-color .15s, background .15s; }
+	.tga-tier-lbl:hover { border-color: #999; }
+	.tga-tier-lbl.tga-on { border-color: #2271b1; background: #f0f6fc; }
+	.tga-tier-lbl input { margin-top: 3px; cursor: pointer; flex-shrink: 0; }
+	.tga-tier-body strong { display: block; font-size: 14px; margin-bottom: 3px; }
+	.tga-tier-body span { display: block; color: #555; font-size: 12px; line-height: 1.4; }
+	/* Provider cards */
+	.tga-prov-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+	.tga-prov-lbl { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border: 2px solid #dcdcde; border-radius: 8px; cursor: pointer; min-width: 148px; transition: border-color .15s, background .15s; }
+	.tga-prov-lbl:not(.tga-soon):hover { border-color: #999; }
+	.tga-prov-lbl.tga-on { border-color: #2271b1; background: #f0f6fc; }
+	.tga-prov-lbl.tga-soon { opacity: .45; cursor: default; pointer-events: none; }
+	.tga-prov-logo { font-size: 22px; line-height: 1; flex-shrink: 0; }
+	.tga-prov-body strong { display: block; font-size: 13px; }
+	.tga-prov-body small { color: #777; font-size: 11px; }
+	/* Key panel */
+	.tga-key-panel { background: #fff; border: 1px solid #dcdcde; border-radius: 8px; padding: 20px 24px; margin-bottom: 6px; }
+	.tga-key-panel > label { font-weight: 600; font-size: 13px; display: block; margin-bottom: 8px; }
+	/* Instructions */
+	.tga-instr { margin-top: 16px; background: #f6f7f7; border-left: 3px solid #2271b1; padding: 14px 18px; border-radius: 0 6px 6px 0; }
+	.tga-instr h4 { margin: 0 0 10px; font-size: 13px; color: #1d2327; }
+	.tga-instr ol { margin: 0 0 10px; padding-left: 20px; }
+	.tga-instr ol li { font-size: 13px; color: #444; margin-bottom: 5px; }
+	.tga-instr .tga-meta { font-size: 12px; color: #666; margin: 8px 0 0; }
+	/* Badges */
+	.tga-badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; vertical-align: middle; margin-left: 4px; }
+	.tga-badge-free { background: #d1fae5; color: #065f46; }
+	.tga-badge-paid { background: #fef3c7; color: #92400e; }
+	.tga-badge-soon { background: #f3f4f6; color: #6b7280; font-weight: 500; }
+	</style>
 
-		<h2 style="margin-top:24px;">Tag Schema</h2>
-		<p>For matching to work, tag your WooCommerce products using these slugs:</p>
+	<form method="post" action="options.php">
+	<?php settings_fields( 'tga_settings' ); ?>
 
-		<h3>Occasion (custom taxonomy: <code>occasion</code>)</h3>
-		<table class="widefat" style="max-width:600px;">
-			<thead><tr><th>Slug</th><th>Label</th></tr></thead>
-			<tbody>
-				<?php
-				$occasions = [
-					'birthday'      => 'Birthday',
-					'anniversary'   => 'Anniversary',
-					'christmas'     => 'Christmas / Holiday',
-					'thank-you'     => 'Thank You',
-					'graduation'    => 'Graduation',
-					'housewarming'  => 'Housewarming',
-					'valentines-day'=> "Valentine's Day",
-					'mothers-day'   => "Mother's Day",
-					'fathers-day'   => "Father's Day",
-					'baby-shower'   => 'Baby Shower',
-					'just-because'  => 'Just Because',
-					'wedding'       => 'Wedding',
-				];
-				foreach ( $occasions as $slug => $label ) {
-					echo "<tr><td><code>{$slug}</code></td><td>{$label}</td></tr>";
-				}
-				?>
-			</tbody>
+	<!-- ── Display ──────────────────────────────── -->
+	<div class="tga-s">
+		<h2>Display</h2>
+		<table class="form-table">
+			<tr>
+				<th scope="row"><label for="tga_show_widget">Floating Widget</label></th>
+				<td>
+					<label>
+						<input type="checkbox" id="tga_show_widget" name="tga_show_widget" value="1"
+							<?php checked( 1, get_option( 'tga_show_widget', 1 ) ); ?> />
+						Show the 🎁 "Find a Gift" button on all pages
+					</label>
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="tga_widget_label">Button Label</label></th>
+				<td>
+					<input type="text" id="tga_widget_label" name="tga_widget_label"
+						value="<?php echo esc_attr( get_option( 'tga_widget_label', 'Find a Gift' ) ); ?>"
+						class="regular-text" />
+				</td>
+			</tr>
+			<tr>
+				<th scope="row"><label for="tga_max_results">Max Products Shown</label></th>
+				<td>
+					<input type="number" id="tga_max_results" name="tga_max_results" min="1" max="6"
+						value="<?php echo esc_attr( get_option( 'tga_max_results', 3 ) ); ?>"
+						class="small-text" />
+					<p class="description">How many matching products to show per search (1–6).</p>
+				</td>
+			</tr>
 		</table>
+	</div>
 
-		<h3 style="margin-top:16px;">Recipient (standard product tag)</h3>
-		<p><code>for-mom</code> &nbsp; <code>for-dad</code> &nbsp; <code>for-partner</code> &nbsp; <code>for-friend</code> &nbsp; <code>for-coworker</code> &nbsp; <code>for-teacher</code> &nbsp; <code>for-teen</code> &nbsp; <code>for-kids</code></p>
+	<!-- ── AI Messages ──────────────────────────── -->
+	<div class="tga-s">
+		<h2>AI Messages</h2>
+		<p class="description" style="margin-bottom: 20px;">
+			A short personalised message appears above search results. Select a plan, choose a provider, and paste your API key.
+			Leave the key blank to disable AI messages.
+		</p>
 
-		<h3>Vibe (standard product tag)</h3>
-		<p><code>sentimental</code> &nbsp; <code>funny</code> &nbsp; <code>cute</code> &nbsp; <code>practical</code> &nbsp; <code>creative</code> &nbsp; <code>personalized</code></p>
+		<!-- Tier selector -->
+		<div class="tga-tier-row">
+			<label class="tga-tier-lbl <?php echo $tier === 'free' ? 'tga-on' : ''; ?>">
+				<input type="radio" name="tga_ai_tier" value="free" <?php checked( $tier, 'free' ); ?>>
+				<div class="tga-tier-body">
+					<strong>🆓 Free</strong>
+					<span>Open-source models with generous free tiers — no credit card needed</span>
+				</div>
+			</label>
+			<label class="tga-tier-lbl <?php echo $tier === 'paid' ? 'tga-on' : ''; ?>">
+				<input type="radio" name="tga_ai_tier" value="paid" <?php checked( $tier, 'paid' ); ?>>
+				<div class="tga-tier-body">
+					<strong>✨ Paid</strong>
+					<span>Premium commercial APIs — higher quality &amp; reliability</span>
+				</div>
+			</label>
+		</div>
+
+		<!-- ── Free providers ──── -->
+		<div id="tga-free" <?php echo $tier !== 'free' ? 'style="display:none"' : ''; ?>>
+			<p style="margin: 0 0 12px; font-size: 13px; color: #444;">Choose your AI provider:</p>
+			<div class="tga-prov-row">
+				<label class="tga-prov-lbl <?php echo ( $tier === 'free' && $provider === 'groq' ) ? 'tga-on' : ''; ?>">
+					<input type="radio" name="tga_ai_provider" value="groq" <?php checked( $provider, 'groq' ); ?>>
+					<span class="tga-prov-logo">⚡</span>
+					<div class="tga-prov-body">
+						<strong>Groq</strong>
+						<small>Fast LLaMA · Free</small>
+					</div>
+				</label>
+				<div class="tga-prov-lbl tga-soon">
+					<span class="tga-prov-logo">☁️</span>
+					<div class="tga-prov-body">
+						<strong>Cloudflare AI <span class="tga-badge tga-badge-soon">Soon</span></strong>
+						<small>Workers AI</small>
+					</div>
+				</div>
+				<div class="tga-prov-lbl tga-soon">
+					<span class="tga-prov-logo">🔀</span>
+					<div class="tga-prov-body">
+						<strong>OpenRouter <span class="tga-badge tga-badge-soon">Soon</span></strong>
+						<small>Multi-model</small>
+					</div>
+				</div>
+			</div>
+
+			<!-- Groq key panel -->
+			<div id="tga-key-groq" class="tga-key-panel"
+				<?php echo ( $tier !== 'free' || $provider !== 'groq' ) ? 'style="display:none"' : ''; ?>>
+				<label for="tga_groq_api_key">
+					Groq API Key <span class="tga-badge tga-badge-free">Free</span>
+				</label>
+				<input type="password" id="tga_groq_api_key" name="tga_groq_api_key"
+					value="<?php echo esc_attr( $groq_key ); ?>"
+					class="regular-text" autocomplete="new-password" placeholder="gsk_…" />
+				<div class="tga-instr">
+					<h4>🔑 How to get your free Groq API key</h4>
+					<ol>
+						<li>Go to <a href="https://console.groq.com" target="_blank">console.groq.com</a></li>
+						<li>Create a free account — no credit card required</li>
+						<li>Click <strong>API Keys</strong> in the left sidebar</li>
+						<li>Click <strong>Create API Key</strong> and name it (e.g. "TinyJoy")</li>
+						<li>Copy the key (starts with <code>gsk_</code>) and paste it above</li>
+					</ol>
+					<p class="tga-meta">Free tier: 14,400 requests/day &nbsp;·&nbsp; Model: <code>llama-3.1-8b-instant</code></p>
+				</div>
+			</div>
+		</div>
+
+		<!-- ── Paid providers ──── -->
+		<div id="tga-paid" <?php echo $tier !== 'paid' ? 'style="display:none"' : ''; ?>>
+			<p style="margin: 0 0 12px; font-size: 13px; color: #444;">Choose your AI provider:</p>
+			<div class="tga-prov-row">
+				<label class="tga-prov-lbl <?php echo ( $tier === 'paid' && $provider === 'anthropic' ) ? 'tga-on' : ''; ?>">
+					<input type="radio" name="tga_ai_provider" value="anthropic" <?php checked( $provider, 'anthropic' ); ?>>
+					<span class="tga-prov-logo">🤖</span>
+					<div class="tga-prov-body">
+						<strong>Anthropic</strong>
+						<small>Claude Haiku</small>
+					</div>
+				</label>
+				<label class="tga-prov-lbl <?php echo ( $tier === 'paid' && $provider === 'gemini' ) ? 'tga-on' : ''; ?>">
+					<input type="radio" name="tga_ai_provider" value="gemini" <?php checked( $provider, 'gemini' ); ?>>
+					<span class="tga-prov-logo">💎</span>
+					<div class="tga-prov-body">
+						<strong>Gemini</strong>
+						<small>1.5 Flash</small>
+					</div>
+				</label>
+				<label class="tga-prov-lbl <?php echo ( $tier === 'paid' && $provider === 'openai' ) ? 'tga-on' : ''; ?>">
+					<input type="radio" name="tga_ai_provider" value="openai" <?php checked( $provider, 'openai' ); ?>>
+					<span class="tga-prov-logo">✦</span>
+					<div class="tga-prov-body">
+						<strong>OpenAI</strong>
+						<small>GPT-4o mini</small>
+					</div>
+				</label>
+			</div>
+
+			<!-- Anthropic key panel -->
+			<div id="tga-key-anthropic" class="tga-key-panel"
+				<?php echo ( $tier !== 'paid' || $provider !== 'anthropic' ) ? 'style="display:none"' : ''; ?>>
+				<label for="tga_anthropic_api_key">
+					Anthropic API Key <span class="tga-badge tga-badge-paid">Paid</span>
+				</label>
+				<input type="password" id="tga_anthropic_api_key" name="tga_anthropic_api_key"
+					value="<?php echo esc_attr( $ant_key ); ?>"
+					class="regular-text" autocomplete="new-password" placeholder="sk-ant-…" />
+				<div class="tga-instr">
+					<h4>🔑 How to get your Anthropic API key</h4>
+					<ol>
+						<li>Go to <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a></li>
+						<li>Sign in or create an account and add billing details</li>
+						<li>Click <strong>API Keys</strong> in the left sidebar</li>
+						<li>Click <strong>Create Key</strong> and give it a name</li>
+						<li>Copy the key (starts with <code>sk-ant-</code>) and paste it above</li>
+					</ol>
+					<p class="tga-meta">Model: <code>claude-haiku-4-5</code> &nbsp;·&nbsp; ~$0.001 per message &nbsp;·&nbsp; <a href="https://www.anthropic.com/pricing" target="_blank">Pricing ↗</a></p>
+				</div>
+			</div>
+
+			<!-- Gemini key panel -->
+			<div id="tga-key-gemini" class="tga-key-panel"
+				<?php echo ( $tier !== 'paid' || $provider !== 'gemini' ) ? 'style="display:none"' : ''; ?>>
+				<label for="tga_gemini_api_key">
+					Google Gemini API Key <span class="tga-badge tga-badge-paid">Paid</span>
+				</label>
+				<input type="password" id="tga_gemini_api_key" name="tga_gemini_api_key"
+					value="<?php echo esc_attr( $gem_key ); ?>"
+					class="regular-text" autocomplete="new-password" placeholder="AIza…" />
+				<div class="tga-instr">
+					<h4>🔑 How to get your Gemini API key</h4>
+					<ol>
+						<li>Go to <a href="https://aistudio.google.com/app/apikey" target="_blank">Google AI Studio</a></li>
+						<li>Sign in with your Google account</li>
+						<li>Click <strong>Create API Key</strong></li>
+						<li>Select or create a Google Cloud project when prompted</li>
+						<li>Copy the key (starts with <code>AIza</code>) and paste it above</li>
+					</ol>
+					<p class="tga-meta">Model: <code>gemini-1.5-flash</code> &nbsp;·&nbsp; Free tier available &nbsp;·&nbsp; <a href="https://ai.google.dev/pricing" target="_blank">Pricing ↗</a></p>
+				</div>
+			</div>
+
+			<!-- OpenAI key panel -->
+			<div id="tga-key-openai" class="tga-key-panel"
+				<?php echo ( $tier !== 'paid' || $provider !== 'openai' ) ? 'style="display:none"' : ''; ?>>
+				<label for="tga_openai_api_key">
+					OpenAI API Key <span class="tga-badge tga-badge-paid">Paid</span>
+				</label>
+				<input type="password" id="tga_openai_api_key" name="tga_openai_api_key"
+					value="<?php echo esc_attr( $oai_key ); ?>"
+					class="regular-text" autocomplete="new-password" placeholder="sk-…" />
+				<div class="tga-instr">
+					<h4>🔑 How to get your OpenAI API key</h4>
+					<ol>
+						<li>Go to <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a></li>
+						<li>Sign in or create an account, then add a payment method</li>
+						<li>Click <strong>+ Create new secret key</strong></li>
+						<li>Name it (e.g. "TinyJoy") and click <strong>Create</strong></li>
+						<li>Copy the key (starts with <code>sk-</code>) and paste it above</li>
+					</ol>
+					<p class="tga-meta">Model: <code>gpt-4o-mini</code> &nbsp;·&nbsp; ~$0.0003 per message &nbsp;·&nbsp; <a href="https://openai.com/pricing" target="_blank">Pricing ↗</a></p>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<?php submit_button(); ?>
+	</form>
+
+	<hr style="margin: 32px 0 24px;" />
+	<h2>Shortcode</h2>
+	<p>Embed the full Gift Finder wizard on any page or post:</p>
+	<code>[tinyjoy_gift_finder]</code>
+
+	<h2 style="margin-top:24px;">Tag Schema</h2>
+	<p>For matching to work, tag your WooCommerce products using these slugs:</p>
+
+	<h3>Occasion (custom taxonomy: <code>occasion</code>)</h3>
+	<table class="widefat" style="max-width:600px;">
+		<thead><tr><th>Slug</th><th>Label</th></tr></thead>
+		<tbody>
+			<?php
+			$occasions = [
+				'birthday'       => 'Birthday',
+				'anniversary'    => 'Anniversary',
+				'christmas'      => 'Christmas / Holiday',
+				'thank-you'      => 'Thank You',
+				'graduation'     => 'Graduation',
+				'housewarming'   => 'Housewarming',
+				'valentines-day' => "Valentine's Day",
+				'mothers-day'    => "Mother's Day",
+				'fathers-day'    => "Father's Day",
+				'baby-shower'    => 'Baby Shower',
+				'just-because'   => 'Just Because',
+				'wedding'        => 'Wedding',
+			];
+			foreach ( $occasions as $slug => $label ) {
+				echo "<tr><td><code>{$slug}</code></td><td>{$label}</td></tr>";
+			}
+			?>
+		</tbody>
+	</table>
+
+	<h3 style="margin-top:16px;">Recipient (standard product tag)</h3>
+	<p><code>for-mom</code> &nbsp; <code>for-dad</code> &nbsp; <code>for-partner</code> &nbsp; <code>for-friend</code> &nbsp; <code>for-coworker</code> &nbsp; <code>for-teacher</code> &nbsp; <code>for-teen</code> &nbsp; <code>for-kids</code></p>
+
+	<h3>Vibe (standard product tag)</h3>
+	<p><code>sentimental</code> &nbsp; <code>funny</code> &nbsp; <code>cute</code> &nbsp; <code>practical</code> &nbsp; <code>creative</code> &nbsp; <code>personalized</code></p>
+
+	<script>
+	(function () {
+		var tierRadios = document.querySelectorAll('[name="tga_ai_tier"]');
+		var provRadios = document.querySelectorAll('[name="tga_ai_provider"]');
+
+		// ── Tier switching ──────────────────────────
+		tierRadios.forEach(function (r) {
+			r.addEventListener('change', function () {
+				var tier = this.value;
+				document.querySelectorAll('.tga-tier-lbl').forEach(function (lbl) {
+					lbl.classList.toggle('tga-on', lbl.querySelector('input').value === tier);
+				});
+				document.getElementById('tga-free').style.display = tier === 'free' ? '' : 'none';
+				document.getElementById('tga-paid').style.display = tier === 'paid' ? '' : 'none';
+				// Auto-select default provider for the chosen tier
+				var defaults = { free: 'groq', paid: 'anthropic' };
+				var defRadio = document.querySelector('[name="tga_ai_provider"][value="' + defaults[tier] + '"]');
+				if (defRadio) {
+					defRadio.checked = true;
+					defRadio.dispatchEvent(new Event('change'));
+				}
+			});
+		});
+
+		// ── Provider switching ──────────────────────
+		provRadios.forEach(function (r) {
+			r.addEventListener('change', function () {
+				var prov = this.value;
+				document.querySelectorAll('.tga-prov-lbl input[type="radio"]').forEach(function (input) {
+					input.closest('.tga-prov-lbl').classList.toggle('tga-on', input.value === prov);
+				});
+				['groq', 'anthropic', 'gemini', 'openai'].forEach(function (p) {
+					var el = document.getElementById('tga-key-' + p);
+					if (el) el.style.display = p === prov ? '' : 'none';
+				});
+			});
+		});
+	})();
+	</script>
 	</div>
 	<?php
 }
@@ -453,19 +722,15 @@ function tga_query_products( string $recipient, string $occasion, string $vibe, 
 	return $results;
 }
 
-// ─── ANTHROPIC AI MESSAGE ─────────────────────────────────────────────────────
+// ─── AI MESSAGE ───────────────────────────────────────────────────────────────
 
-function tga_get_ai_message( string $recipient, string $occasion, string $vibe, string $budget, array $products ): string {
-	$api_key = get_option( 'tga_anthropic_api_key', '' );
-	if ( ! $api_key ) return '';
-
+function tga_ai_build_prompt( string $recipient, string $occasion, string $vibe, string $budget, array $products ): string {
 	$product_names = implode( ', ', array_column( $products, 'name' ) );
-
 	$labels = [
 		'recipient' => $recipient && $recipient !== 'anyone' ? $recipient : 'someone special',
-		'occasion'  => $occasion  && $occasion  !== 'any'   ? str_replace( '-', ' ', $occasion )   : 'any occasion',
-		'vibe'      => $vibe      && $vibe       !== 'any'   ? $vibe                                 : 'any style',
-		'budget'    => match( $budget ) {
+		'occasion'  => $occasion  && $occasion  !== 'any'   ? str_replace( '-', ' ', $occasion ) : 'any occasion',
+		'vibe'      => $vibe      && $vibe       !== 'any'   ? $vibe : 'any style',
+		'budget'    => match ( $budget ) {
 			'under-25'  => 'under $25',
 			'under-50'  => 'under $50',
 			'under-100' => 'under $100',
@@ -473,15 +738,38 @@ function tga_get_ai_message( string $recipient, string $occasion, string $vibe, 
 			default     => 'any budget',
 		},
 	];
-
-	$prompt = "You are TinyJoy's warm and friendly Gift Assistant. TinyJoy sells small, customizable gifts — tagline: 'Small gifts, Big Smiles'.\n\n"
+	return "You are TinyJoy's warm and friendly Gift Assistant. TinyJoy sells small, customizable gifts — tagline: 'Small gifts, Big Smiles'.\n\n"
 		. "A customer wants a gift for {$labels['recipient']} for {$labels['occasion']}. "
 		. "They want something {$labels['vibe']} with a budget of {$labels['budget']}.\n\n"
 		. "We matched these TinyJoy products: {$product_names}.\n\n"
 		. "Write exactly 2 warm sentences: (1) Why these gifts are perfect for this person and occasion. "
 		. "(2) A gentle nudge to personalize it (add a name, photo, or message). "
 		. "Sound like a thoughtful friend, not a salesperson. No lists, no headers.";
+}
 
+function tga_ai_groq( string $prompt ): string {
+	$api_key = get_option( 'tga_groq_api_key', '' );
+	if ( ! $api_key ) return '';
+	$response = wp_remote_post( 'https://api.groq.com/openai/v1/chat/completions', [
+		'timeout' => 15,
+		'headers' => [
+			'Authorization' => 'Bearer ' . $api_key,
+			'Content-Type'  => 'application/json',
+		],
+		'body' => wp_json_encode( [
+			'model'      => 'llama-3.1-8b-instant',
+			'max_tokens' => 180,
+			'messages'   => [ [ 'role' => 'user', 'content' => $prompt ] ],
+		] ),
+	] );
+	if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) return '';
+	$body = json_decode( wp_remote_retrieve_body( $response ), true );
+	return wp_kses( $body['choices'][0]['message']['content'] ?? '', [] );
+}
+
+function tga_ai_anthropic( string $prompt ): string {
+	$api_key = get_option( 'tga_anthropic_api_key', '' );
+	if ( ! $api_key ) return '';
 	$response = wp_remote_post( 'https://api.anthropic.com/v1/messages', [
 		'timeout' => 15,
 		'headers' => [
@@ -492,16 +780,58 @@ function tga_get_ai_message( string $recipient, string $occasion, string $vibe, 
 		'body' => wp_json_encode( [
 			'model'      => 'claude-haiku-4-5-20251001',
 			'max_tokens' => 180,
-			'messages'   => [
-				[ 'role' => 'user', 'content' => $prompt ],
-			],
+			'messages'   => [ [ 'role' => 'user', 'content' => $prompt ] ],
 		] ),
 	] );
-
-	if ( is_wp_error( $response ) ) return '';
-	$code = wp_remote_retrieve_response_code( $response );
-	if ( $code !== 200 ) return '';
-
+	if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) return '';
 	$body = json_decode( wp_remote_retrieve_body( $response ), true );
 	return wp_kses( $body['content'][0]['text'] ?? '', [] );
+}
+
+function tga_ai_gemini( string $prompt ): string {
+	$api_key = get_option( 'tga_gemini_api_key', '' );
+	if ( ! $api_key ) return '';
+	$url      = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' . rawurlencode( $api_key );
+	$response = wp_remote_post( $url, [
+		'timeout' => 15,
+		'headers' => [ 'Content-Type' => 'application/json' ],
+		'body'    => wp_json_encode( [
+			'contents'         => [ [ 'parts' => [ [ 'text' => $prompt ] ] ] ],
+			'generationConfig' => [ 'maxOutputTokens' => 180 ],
+		] ),
+	] );
+	if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) return '';
+	$body = json_decode( wp_remote_retrieve_body( $response ), true );
+	return wp_kses( $body['candidates'][0]['content']['parts'][0]['text'] ?? '', [] );
+}
+
+function tga_ai_openai( string $prompt ): string {
+	$api_key = get_option( 'tga_openai_api_key', '' );
+	if ( ! $api_key ) return '';
+	$response = wp_remote_post( 'https://api.openai.com/v1/chat/completions', [
+		'timeout' => 15,
+		'headers' => [
+			'Authorization' => 'Bearer ' . $api_key,
+			'Content-Type'  => 'application/json',
+		],
+		'body' => wp_json_encode( [
+			'model'      => 'gpt-4o-mini',
+			'max_tokens' => 180,
+			'messages'   => [ [ 'role' => 'user', 'content' => $prompt ] ],
+		] ),
+	] );
+	if ( is_wp_error( $response ) || wp_remote_retrieve_response_code( $response ) !== 200 ) return '';
+	$body = json_decode( wp_remote_retrieve_body( $response ), true );
+	return wp_kses( $body['choices'][0]['message']['content'] ?? '', [] );
+}
+
+function tga_get_ai_message( string $recipient, string $occasion, string $vibe, string $budget, array $products ): string {
+	$prompt   = tga_ai_build_prompt( $recipient, $occasion, $vibe, $budget, $products );
+	$provider = get_option( 'tga_ai_provider', 'groq' );
+	return match ( $provider ) {
+		'anthropic' => tga_ai_anthropic( $prompt ),
+		'gemini'    => tga_ai_gemini( $prompt ),
+		'openai'    => tga_ai_openai( $prompt ),
+		default     => tga_ai_groq( $prompt ),
+	};
 }
