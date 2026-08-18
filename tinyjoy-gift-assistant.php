@@ -3,7 +3,7 @@
  * Plugin Name: TinyJoy Gift Assistant
  * Plugin URI:  https://tinyjoygifts.com
  * Description: AI-powered gift finder — recommends TinyJoy products by recipient, occasion, vibe, and budget. Includes floating widget + shortcode.
- * Version:     1.0.0
+ * Version:     1.1.0
  * Author:      TinyJoy
  * Text Domain: tinyjoy-gift-assistant
  * Requires at least: 6.0
@@ -14,9 +14,114 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'TGA_VERSION',    '1.0.0' );
+define( 'TGA_VERSION',    '1.1.0' );
 define( 'TGA_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'TGA_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
+
+// ─── SELF-UPDATER ─────────────────────────────────────────────────────────────
+// Queries GitHub Releases API so WordPress can install updates natively
+// (delete old folder + install new zip) without any external plugin.
+// To release an update: bump TGA_VERSION, push to main, create a GitHub Release
+// tagged vX.Y.Z — WordPress sites will see the update within 12 hours.
+
+add_filter( 'pre_set_site_transient_update_plugins', 'tga_check_for_update' );
+function tga_check_for_update( $transient ) {
+	if ( empty( $transient->checked ) ) {
+		return $transient;
+	}
+
+	$plugin_slug = plugin_basename( __FILE__ );
+	$api_url     = 'https://api.github.com/repos/leoncons/tinyjoy-gift-assistant/releases/latest';
+
+	$response = get_transient( 'tga_github_update_check' );
+	if ( false === $response ) {
+		$response = wp_remote_get( $api_url, [
+			'headers' => [ 'User-Agent' => 'WordPress/' . get_bloginfo( 'version' ) ],
+			'timeout' => 10,
+		] );
+		set_transient( 'tga_github_update_check', $response, 12 * HOUR_IN_SECONDS );
+	}
+
+	if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+		return $transient;
+	}
+
+	$release = json_decode( wp_remote_retrieve_body( $response ) );
+	if ( empty( $release->tag_name ) ) {
+		return $transient;
+	}
+
+	$remote_version = ltrim( $release->tag_name, 'v' );
+
+	if ( version_compare( $remote_version, TGA_VERSION, '>' ) ) {
+		$zip_url = ! empty( $release->assets[0]->browser_download_url )
+			? $release->assets[0]->browser_download_url
+			: "https://github.com/leoncons/tinyjoy-gift-assistant/archive/refs/tags/{$release->tag_name}.zip";
+
+		$transient->response[ $plugin_slug ] = (object) [
+			'slug'         => 'tinyjoy-gift-assistant',
+			'plugin'       => $plugin_slug,
+			'new_version'  => $remote_version,
+			'url'          => 'https://github.com/leoncons/tinyjoy-gift-assistant',
+			'package'      => $zip_url,
+			'icons'        => [],
+			'banners'      => [],
+			'requires'     => '6.0',
+			'requires_php' => '8.0',
+			'tested'       => get_bloginfo( 'version' ),
+		];
+	}
+
+	return $transient;
+}
+
+add_filter( 'plugins_api', 'tga_plugin_api_info', 20, 3 );
+function tga_plugin_api_info( $result, $action, $args ) {
+	if ( 'plugin_information' !== $action || 'tinyjoy-gift-assistant' !== ( $args->slug ?? '' ) ) {
+		return $result;
+	}
+
+	$response = wp_remote_get(
+		'https://api.github.com/repos/leoncons/tinyjoy-gift-assistant/releases/latest',
+		[ 'headers' => [ 'User-Agent' => 'WordPress/' . get_bloginfo( 'version' ) ], 'timeout' => 10 ]
+	);
+
+	if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+		return $result;
+	}
+
+	$release = json_decode( wp_remote_retrieve_body( $response ) );
+	if ( empty( $release->tag_name ) ) {
+		return $result;
+	}
+
+	$zip_url = ! empty( $release->assets[0]->browser_download_url )
+		? $release->assets[0]->browser_download_url
+		: "https://github.com/leoncons/tinyjoy-gift-assistant/archive/refs/tags/{$release->tag_name}.zip";
+
+	return (object) [
+		'name'          => 'TinyJoy Gift Assistant',
+		'slug'          => 'tinyjoy-gift-assistant',
+		'version'       => ltrim( $release->tag_name, 'v' ),
+		'author'        => '<a href="https://tinyjoygifts.com">TinyJoy</a>',
+		'homepage'      => 'https://tinyjoygifts.com',
+		'requires'      => '6.0',
+		'requires_php'  => '8.0',
+		'download_link' => $zip_url,
+		'sections'      => [
+			'description' => 'AI-powered gift finder for TinyJoy.',
+			'changelog'   => nl2br( esc_html( $release->body ?? '' ) ),
+		],
+	];
+}
+
+// Clear cached check after any plugin upgrade so new version is detected immediately.
+add_action( 'upgrader_process_complete', 'tga_clear_update_cache', 10, 2 );
+function tga_clear_update_cache( $upgrader, $options ): void {
+	if ( 'plugin' === ( $options['type'] ?? '' ) ) {
+		delete_transient( 'tga_github_update_check' );
+	}
+}
 
 // ─── ADMIN ────────────────────────────────────────────────────────────────────
 
