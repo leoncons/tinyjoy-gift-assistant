@@ -38,6 +38,10 @@ class TestParser(unittest.TestCase):
         self.assertEqual(parsed.params, {"ar": "16:9", "v": "6"})
         self.assertNotIn("Negative", parsed.prompt)
 
+    def test_leftover_punctuation_dropped(self):
+        self.assertEqual(extract_prompt("glass owl on a rooftop\n#tag & #owl"),
+                         "glass owl on a rooftop")
+
     def test_empty(self):
         parsed = parse("")
         self.assertEqual(parsed.prompt, "")

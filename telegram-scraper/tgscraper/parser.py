@@ -39,10 +39,18 @@ def extract_tags(text: str) -> list[str]:
     return [t for t in seen if t]
 
 
+TRIM_CHARS = " \t-–—|&,·•*"
+
+
 def _strip_noise(text: str) -> str:
-    text = HASHTAG_RE.sub("", text)
-    text = URL_RE.sub("", text)
-    return re.sub(r"[ \t]{2,}", " ", text).strip(" \n\t-–—|")
+    """Drop hashtags and URLs, then tidy the leftovers line by line."""
+    text = URL_RE.sub("", HASHTAG_RE.sub("", text or ""))
+    lines = []
+    for line in text.split("\n"):
+        line = re.sub(r"[ \t]{2,}", " ", line).strip().strip(TRIM_CHARS)
+        if any(ch.isalnum() for ch in line):
+            lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def extract_prompt(text: str) -> str:

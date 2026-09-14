@@ -84,6 +84,13 @@ python scrape.py --channel @some_channel
 python -m unittest discover -s tests
 ```
 
+## n8n version
+
+Prefer a no-code pipeline? `../n8n/` holds two importable workflows: a live one
+(Telegram Trigger → Drive + Sheets) and a backfill one for public channels. See
+[`../n8n/README.md`](../n8n/README.md). Private-channel history still needs this
+scraper — the Bot API cannot read it.
+
 ## Legal
 
 Scrape only channels you have access to, and respect the channel's terms and the
