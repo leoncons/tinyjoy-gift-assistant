@@ -1,0 +1,419 @@
+{
+  "name": "Telegram prompts → Google Drive (backfill)",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 420,
+        "height": 560,
+        "content": "## Telegram → Google Drive (backfill)\n\nWalks the **public** web preview `https://t.me/s/<channel>` page by page, so it needs no Telegram credentials — but it only works for public channels. Private ones: use the Python scraper in `telegram-scraper/`.\n\n1. Set `channel`, `max_pages` and `stop_after_id` in **Config**.\n2. Add Google Drive and Google Sheets credentials, then pick the destination folder and spreadsheet.\n3. Run once. Note the highest `message_id` written and put it in `stop_after_id` for the next run.\n\nSchedule Trigger is disabled by default — enable it for unattended top-ups."
+      },
+      "id": "setup-notes",
+      "name": "Setup notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "run-manually",
+      "name": "Run manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "every-6-hours",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        180
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "channel",
+              "name": "channel",
+              "value": "@some_prompt_channel",
+              "type": "string"
+            },
+            {
+              "id": "max_pages",
+              "name": "max_pages",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "stop_after_id",
+              "name": "stop_after_id",
+              "value": 0,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Backfill: walk a PUBLIC channel's web preview (https://t.me/s/<channel>)\n// page by page and emit one item per post. No Telegram API credentials needed;\n// works only for public channels. Use the Python scraper for private ones.\n\nconst CHANNEL = ($json.channel || '').replace(/^@/, '').replace(/^https?:\\/\\/t\\.me\\/(s\\/)?/, '');\nconst MAX_PAGES = Number($json.max_pages || 20);\nconst STOP_AFTER_ID = Number($json.stop_after_id || 0); // resume marker: ignore ids <= this\n\nconst HASHTAG = /(?<!\\w)#([^\\s#,.;:!?()\\[\\]{}\"']+)/g;\nconst CODE_BLOCK = /```(?:\\w+)?\\n?([\\s\\S]+?)```/g;\nconst LABEL = /^\\s*(?:\\*\\*|__)?\\s*(?:prompt|промпт|prompt\\s*\\d+)\\s*(?:\\*\\*|__)?\\s*[:\\-–—]\\s*/im;\nconst NEGATIVE = /^\\s*(?:negative\\s*prompt|negative)\\s*[:\\-–—]\\s*(.+)$/im;\nconst QUOTE = /^>\\s?(.+)$/gm;\nconst PARAM = /--(\\w+)\\s+([^\\s-][^\\s]*)/g;\nconst URL = /https?:\\/\\/\\S+/g;\n\nconst ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '\"', '#39': \"'\", nbsp: ' ', '#036': '$' };\n\nfunction decode(text) {\n  return text\n    .replace(/&#(\\d+);/g, (_, code) => String.fromCharCode(Number(code)))\n    .replace(/&([a-z#0-9]+);/gi, (match, name) => ENTITIES[name.toLowerCase()] ?? match);\n}\n\nfunction htmlToText(html) {\n  return decode(\n    html\n      .replace(/<br\\s*\\/?>/gi, '\\n')\n      .replace(/<\\/(p|div)>/gi, '\\n')\n      .replace(/<[^>]+>/g, '')\n  ).replace(/\\n{3,}/g, '\\n\\n').trim();\n}\n\nfunction tagsOf(text) {\n  const out = [];\n  for (const m of (text || '').matchAll(HASHTAG)) {\n    const tag = m[1].replace(/^[_-]+|[_-]+$/g, '').toLowerCase();\n    if (tag && !out.includes(tag)) out.push(tag);\n  }\n  return out;\n}\n\nfunction clean(text) {\n  return (text || '')\n    .replace(HASHTAG, '')\n    .replace(URL, '')\n    .split('\\n')\n    .map((line) =>\n      line\n        .replace(/[ \\t]{2,}/g, ' ')\n        .trim()\n        .replace(/^[-–—|&,·•*\\s]+|[-–—|&,·•*\\s]+$/g, '')\n    )\n    .filter((line) => /[\\p{L}\\p{N}]/u.test(line))\n    .join('\\n')\n    .trim();\n}\n\nfunction promptOf(text) {\n  if (!text) return '';\n  const blocks = [...text.matchAll(CODE_BLOCK)].map((m) => m[1].trim()).filter(Boolean);\n  if (blocks.length) return blocks.sort((a, b) => b.length - a.length)[0];\n  const label = text.match(LABEL);\n  if (label) {\n    const tail = text.slice(label.index + label[0].length);\n    const stop = tail.match(/\\n\\s*\\w[\\w ]{0,20}\\s*[:\\-–—]\\s/);\n    const body = clean(stop ? tail.slice(0, stop.index) : tail);\n    if (body) return body;\n  }\n  const quotes = [...text.matchAll(QUOTE)].map((m) => m[1]);\n  if (quotes.length) return clean(quotes.join('\\n'));\n  return clean(text);\n}\n\nfunction parse(text) {\n  text = text || '';\n  let negative = '';\n  let body = text;\n  const neg = text.match(NEGATIVE);\n  if (neg) {\n    negative = clean(neg[1]);\n    body = text.slice(0, neg.index) + text.slice(neg.index + neg[0].length);\n  }\n  const params = {};\n  for (const m of text.matchAll(PARAM)) params[m[1].toLowerCase()] = m[2];\n  return {\n    prompt: promptOf(body),\n    negative_prompt: negative,\n    tags: tagsOf(text),\n    params,\n    links: text.match(URL) || [],\n    raw_text: text,\n  };\n}\n\nfunction parsePage(html) {\n  const posts = [];\n  // Each post starts at a data-post=\"channel/<id>\" marker.\n  const chunks = html.split(/<div class=\"tgme_widget_message[^\"]*\"[^>]*data-post=\"/).slice(1);\n  for (const chunk of chunks) {\n    const idMatch = chunk.match(/^[^/]+\\/(\\d+)\"/);\n    if (!idMatch) continue;\n    const messageId = Number(idMatch[1]);\n\n    const textMatch = chunk.match(\n      /<div class=\"tgme_widget_message_text[^\"]*\"[^>]*>([\\s\\S]*?)<\\/div>/\n    );\n    const text = textMatch ? htmlToText(textMatch[1]) : '';\n\n    const images = [];\n    for (const m of chunk.matchAll(/background-image:url\\('([^']+)'\\)/g)) {\n      if (!m[1].includes('emoji') && !images.includes(m[1])) images.push(m[1]);\n    }\n\n    const timeMatch = chunk.match(/<time[^>]*datetime=\"([^\"]+)\"/);\n    const viewsMatch = chunk.match(/tgme_widget_message_views\">([^<]+)</);\n\n    posts.push({\n      message_id: messageId,\n      date: timeMatch ? timeMatch[1] : '',\n      views: viewsMatch ? viewsMatch[1] : null,\n      url: `https://t.me/${CHANNEL}/${messageId}`,\n      channel: `@${CHANNEL}`,\n      image_urls: images,\n      ...parse(text),\n    });\n  }\n  return posts;\n}\n\nif (!CHANNEL) throw new Error('Set \"channel\" in the Config node, e.g. @some_channel');\n\nconst collected = new Map();\nlet before = null;\n\nfor (let page = 0; page < MAX_PAGES; page++) {\n  const url = `https://t.me/s/${CHANNEL}${before ? `?before=${before}` : ''}`;\n  const html = await this.helpers.httpRequest({\n    url,\n    method: 'GET',\n    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; n8n-telegram-scraper/1.0)' },\n    json: false,\n  });\n\n  const posts = parsePage(html);\n  if (!posts.length) break;\n\n  for (const post of posts) {\n    if (post.message_id > STOP_AFTER_ID) collected.set(post.message_id, post);\n  }\n\n  const oldest = Math.min(...posts.map((p) => p.message_id));\n  if (oldest <= STOP_AFTER_ID + 1) break; // reached what we already have\n  before = oldest;\n}\n\nreturn [...collected.values()]\n  .sort((a, b) => a.message_id - b.message_id)\n  .map((post) => ({\n    json: {\n      ...post,\n      // {url, name} pairs so the download + upload nodes need no extra logic\n      images: post.image_urls.map((url, index) => ({\n        url,\n        name: `${CHANNEL}_${String(post.message_id).padStart(7, '0')}_${index}.jpg`,\n      })),\n      has_image: post.image_urls.length > 0,\n      image_count: post.image_urls.length,\n      tags_text: post.tags.join(', '),\n      params_text: JSON.stringify(post.params),\n      links_text: post.links.join(' '),\n      image_urls_text: post.image_urls.join(' '),\n    },\n  }));\n"
+      },
+      "id": "fetch-and-parse-channel",
+      "name": "Fetch and parse channel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "PUT_YOUR_SPREADSHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "message_id": "={{ $json.message_id }}",
+            "date": "={{ $json.date }}",
+            "channel": "={{ $json.channel }}",
+            "url": "={{ $json.url }}",
+            "prompt": "={{ $json.prompt }}",
+            "negative_prompt": "={{ $json.negative_prompt }}",
+            "tags": "={{ $json.tags_text }}",
+            "params": "={{ $json.params_text }}",
+            "links": "={{ $json.links_text }}",
+            "images": "={{ $json.images.map(i => i.name).join(' ') }}",
+            "image_links": "={{ $json.image_urls_text }}",
+            "raw_text": "={{ $json.raw_text }}"
+          },
+          "matchingColumns": [
+            "message_id"
+          ],
+          "schema": [
+            {
+              "id": "message_id",
+              "displayName": "message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "channel",
+              "displayName": "channel",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "prompt",
+              "displayName": "prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "negative_prompt",
+              "displayName": "negative_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tags",
+              "displayName": "tags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "params",
+              "displayName": "params",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "links",
+              "displayName": "links",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "images",
+              "displayName": "images",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "image_links",
+              "displayName": "image_links",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_text",
+              "displayName": "raw_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "append-posts",
+      "name": "Append posts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        660,
+        -120
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "images",
+        "include": "selectedOtherFields",
+        "fieldsToInclude": "message_id,channel,url",
+        "options": {}
+      },
+      "id": "split-images",
+      "name": "Split images",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        660,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.images.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "download-image",
+      "name": "Download image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "name": "={{ $('Split images').item.json.images.name }}",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "root",
+          "mode": "list",
+          "cachedResultName": "/ (Root folder)"
+        },
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "upload-image",
+      "name": "Upload image",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        120
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Drive account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Run manually": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 6 hours": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Fetch and parse channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch and parse channel": {
+      "main": [
+        [
+          {
+            "node": "Append posts",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split images": {
+      "main": [
+        [
+          {
+            "node": "Download image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download image": {
+      "main": [
+        [
+          {
+            "node": "Upload image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "telegram"
+    },
+    {
+      "name": "google-drive"
+    }
+  ],
+  "meta": {
+    "instanceId": "telegram-prompt-scraper"
+  }
+}

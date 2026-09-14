@@ -1,0 +1,384 @@
+{
+  "name": "Telegram prompts → Google Drive (live)",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 420,
+        "height": 520,
+        "content": "## Telegram → Google Drive (live)\n\nCaptures **new** channel posts as they are published.\n\n1. Create a bot with @BotFather, add it to the channel as an **admin** (it cannot read posts otherwise).\n2. Add Telegram, Google Drive and Google Sheets credentials to the three nodes below.\n3. Pick the destination folder in **Upload image** and the spreadsheet in **Append row**.\n4. Activate the workflow.\n\nAlbums (multi-image posts) arrive as separate updates; the caption is cached in workflow static data and reused.\n\nFor **past** posts use the backfill workflow or the Python scraper in `telegram-scraper/`."
+      },
+      "id": "setup-notes",
+      "name": "Setup notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "updates": [
+          "channel_post"
+        ],
+        "additionalFields": {}
+      },
+      "id": "channel-post",
+      "name": "Channel post",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      },
+      "webhookId": "00000000-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse one Telegram channel post into prompt / tags / image references.\n// Albums arrive as separate updates that share media_group_id and carry the\n// caption on one member only, so captions are cached in workflow static data.\n\nconst HASHTAG = /(?<!\\w)#([^\\s#,.;:!?()\\[\\]{}\"']+)/g;\nconst CODE_BLOCK = /```(?:\\w+)?\\n?([\\s\\S]+?)```/g;\nconst LABEL = /^\\s*(?:\\*\\*|__)?\\s*(?:prompt|промпт|prompt\\s*\\d+)\\s*(?:\\*\\*|__)?\\s*[:\\-–—]\\s*/im;\nconst NEGATIVE = /^\\s*(?:negative\\s*prompt|negative)\\s*[:\\-–—]\\s*(.+)$/im;\nconst QUOTE = /^>\\s?(.+)$/gm;\nconst PARAM = /--(\\w+)\\s+([^\\s-][^\\s]*)/g;\nconst URL = /https?:\\/\\/\\S+/g;\n\nfunction tagsOf(text) {\n  const out = [];\n  for (const m of (text || '').matchAll(HASHTAG)) {\n    const tag = m[1].replace(/^[_-]+|[_-]+$/g, '').toLowerCase();\n    if (tag && !out.includes(tag)) out.push(tag);\n  }\n  return out;\n}\n\nfunction clean(text) {\n  return (text || '')\n    .replace(HASHTAG, '')\n    .replace(URL, '')\n    .split('\\n')\n    .map((line) =>\n      line\n        .replace(/[ \\t]{2,}/g, ' ')\n        .trim()\n        .replace(/^[-–—|&,·•*\\s]+|[-–—|&,·•*\\s]+$/g, '')\n    )\n    .filter((line) => /[\\p{L}\\p{N}]/u.test(line))\n    .join('\\n')\n    .trim();\n}\n\nfunction promptOf(text) {\n  if (!text) return '';\n  const blocks = [...text.matchAll(CODE_BLOCK)].map((m) => m[1].trim()).filter(Boolean);\n  if (blocks.length) return blocks.sort((a, b) => b.length - a.length)[0];\n\n  const label = text.match(LABEL);\n  if (label) {\n    const tail = text.slice(label.index + label[0].length);\n    const stop = tail.match(/\\n\\s*\\w[\\w ]{0,20}\\s*[:\\-–—]\\s/);\n    const body = clean(stop ? tail.slice(0, stop.index) : tail);\n    if (body) return body;\n  }\n\n  const quotes = [...text.matchAll(QUOTE)].map((m) => m[1]);\n  if (quotes.length) return clean(quotes.join('\\n'));\n\n  return clean(text);\n}\n\nfunction parse(text) {\n  text = text || '';\n  let negative = '';\n  const neg = text.match(NEGATIVE);\n  let body = text;\n  if (neg) {\n    negative = clean(neg[1]);\n    body = text.slice(0, neg.index) + text.slice(neg.index + neg[0].length);\n  }\n  const params = {};\n  for (const m of text.matchAll(PARAM)) params[m[1].toLowerCase()] = m[2];\n  return {\n    prompt: promptOf(body),\n    negative_prompt: negative,\n    tags: tagsOf(text),\n    params,\n    links: text.match(URL) || [],\n    raw_text: text,\n  };\n}\n\nconst store = $getWorkflowStaticData('global');\nstore.albums = store.albums || {};\nconst out = [];\n\nfor (const item of $input.all()) {\n  const post = item.json.channel_post || item.json.message || item.json;\n  const chat = post.chat || {};\n  const groupId = post.media_group_id || null;\n  let text = post.text || post.caption || '';\n\n  // Album: remember the caption, reuse it for the other members.\n  if (groupId) {\n    if (text) store.albums[groupId] = { text, at: Date.now() };\n    else text = (store.albums[groupId] || {}).text || '';\n    // drop cached captions older than an hour\n    for (const [key, value] of Object.entries(store.albums)) {\n      if (Date.now() - value.at > 3600000) delete store.albums[key];\n    }\n  }\n\n  // Largest photo size, or an image document.\n  let fileId = null;\n  let fileName = null;\n  if (Array.isArray(post.photo) && post.photo.length) {\n    fileId = post.photo[post.photo.length - 1].file_id;\n    fileName = `${chat.username || chat.id}_${String(post.message_id).padStart(7, '0')}.jpg`;\n  } else if (post.document && String(post.document.mime_type || '').startsWith('image/')) {\n    fileId = post.document.file_id;\n    const ext = (post.document.file_name || '').split('.').pop() || 'jpg';\n    fileName = `${chat.username || chat.id}_${String(post.message_id).padStart(7, '0')}.${ext}`;\n  }\n\n  const parsed = parse(text);\n  out.push({\n    json: {\n      message_id: post.message_id,\n      media_group_id: groupId,\n      date: post.date ? new Date(post.date * 1000).toISOString() : new Date().toISOString(),\n      channel: chat.username ? `@${chat.username}` : String(chat.id || ''),\n      url: chat.username\n        ? `https://t.me/${chat.username}/${post.message_id}`\n        : `https://t.me/c/${String(chat.id || '').replace('-100', '')}/${post.message_id}`,\n      has_image: Boolean(fileId),\n      file_id: fileId,\n      file_name: fileName,\n      ...parsed,\n      tags_text: parsed.tags.join(', '),\n      params_text: JSON.stringify(parsed.params),\n      links_text: (parsed.links || []).join(' '),\n    },\n  });\n}\n\nreturn out;\n"
+      },
+      "id": "parse-post",
+      "name": "Parse post",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-image",
+              "leftValue": "={{ $json.has_image }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "has-image",
+      "name": "Has image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.file_id }}",
+        "download": true
+      },
+      "id": "download-image",
+      "name": "Download image",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        -100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "={{ $('Parse post').item.json.file_name }}",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "root",
+          "mode": "list",
+          "cachedResultName": "/ (Root folder)"
+        },
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "id": "upload-image",
+      "name": "Upload image",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        880,
+        -100
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "PUT_YOUR_SPREADSHEET_ID_HERE",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "message_id": "={{ $('Parse post').item.json.message_id }}",
+            "date": "={{ $('Parse post').item.json.date }}",
+            "channel": "={{ $('Parse post').item.json.channel }}",
+            "url": "={{ $('Parse post').item.json.url }}",
+            "prompt": "={{ $('Parse post').item.json.prompt }}",
+            "negative_prompt": "={{ $('Parse post').item.json.negative_prompt }}",
+            "tags": "={{ $('Parse post').item.json.tags_text }}",
+            "params": "={{ $('Parse post').item.json.params_text }}",
+            "links": "={{ $('Parse post').item.json.links_text }}",
+            "images": "={{ $('Parse post').item.json.file_name || '' }}",
+            "image_links": "={{ $json.webViewLink || '' }}",
+            "raw_text": "={{ $('Parse post').item.json.raw_text }}"
+          },
+          "matchingColumns": [
+            "message_id"
+          ],
+          "schema": [
+            {
+              "id": "message_id",
+              "displayName": "message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "channel",
+              "displayName": "channel",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "url",
+              "displayName": "url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "prompt",
+              "displayName": "prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "negative_prompt",
+              "displayName": "negative_prompt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tags",
+              "displayName": "tags",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "params",
+              "displayName": "params",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "links",
+              "displayName": "links",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "images",
+              "displayName": "images",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "image_links",
+              "displayName": "image_links",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_text",
+              "displayName": "raw_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "append-row",
+      "name": "Append row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Channel post": {
+      "main": [
+        [
+          {
+            "node": "Parse post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse post": {
+      "main": [
+        [
+          {
+            "node": "Has image?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has image?": {
+      "main": [
+        [
+          {
+            "node": "Download image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download image": {
+      "main": [
+        [
+          {
+            "node": "Upload image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload image": {
+      "main": [
+        [
+          {
+            "node": "Append row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "tags": [
+    {
+      "name": "telegram"
+    },
+    {
+      "name": "google-drive"
+    }
+  ],
+  "meta": {
+    "instanceId": "telegram-prompt-scraper"
+  }
+}
